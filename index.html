@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Wendy's Docker Picking</title>
+<style>
+:root{--pink:#ff4b9b;--yellow:#ffd52e}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#111;font-family:Arial,Helvetica,sans-serif}
+#wrap{position:relative;width:100%;height:100%;overflow:hidden}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+#hud{position:absolute;top:12px;left:12px;right:12px;display:flex;justify-content:space-between;align-items:flex-start;z-index:5;pointer-events:none}
+.panel{background:rgba(0,0,0,.72);border:3px solid white;border-radius:14px;color:#fff;padding:8px 12px;font-weight:900;text-shadow:2px 2px #000}
+.big{font-size:clamp(18px,3vw,30px)} .small{font-size:12px;color:#ffe34a}
+#mission{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);z-index:5;color:white;background:rgba(0,0,0,.72);border:3px solid white;border-radius:16px;padding:8px 16px;font-weight:900;text-align:center;min-width:min(92vw,520px)}
+#toast{position:absolute;left:50%;top:23%;transform:translate(-50%,-50%) scale(.8);opacity:0;z-index:10;background:var(--pink);color:white;border:4px solid #111;border-radius:18px;padding:12px 22px;font-size:clamp(18px,4vw,34px);font-weight:1000;text-shadow:2px 2px #111;transition:.18s;white-space:nowrap}
+#toast.show{opacity:1;transform:translate(-50%,-50%) scale(1)}
+#menu,#gameover{position:absolute;inset:0;z-index:30;background:rgba(0,0,0,.68);display:flex;align-items:center;justify-content:center}
+.card{width:min(92vw,620px);background:linear-gradient(#fff,#ffeef8);border:6px solid #111;border-radius:28px;padding:26px;text-align:center;box-shadow:0 12px 0 #111}
+h1{font-size:clamp(38px,9vw,78px);line-height:.86;margin:0 0 12px;color:var(--pink);text-shadow:4px 4px #111}
+h2{font-size:42px;margin:0 0 8px;color:var(--pink)}
+.card p{font-size:clamp(16px,3.5vw,23px);font-weight:800}
+button{border:4px solid #111;border-radius:16px;background:var(--yellow);padding:14px 25px;font-size:clamp(20px,4vw,30px);font-weight:1000;box-shadow:0 7px 0 #111;cursor:pointer}
+button:active{transform:translateY(5px);box-shadow:0 2px 0 #111}
+#hint{font-size:14px;font-weight:700}
+@media(max-width:600px){.panel{padding:6px 9px}.small{font-size:10px}}
+</style>
+</head>
+<body>
+<div id="wrap">
+<canvas id="game"></canvas>
+<div id="hud">
+  <div class="panel big">SCORE <span id="score">0</span><div class="small">BEST <span id="best">0</span></div></div>
+  <div class="panel big">❤️ <span id="lives">3</span><div class="small">DOCKERS <span id="dockers">0</span></div></div>
+</div>
+<div id="toast">+10 DOCKER! 🚬</div>
+<div id="mission">SWIPE LEFT/RIGHT TO CHANGE LANES • SWIPE UP TO JUMP</div>
+
+<div id="menu">
+  <div class="card">
+    <h1>WENDY'S<br>DOCKER PICKING</h1>
+    <p>🏃‍♀️ A proper Kendal endless runner.</p>
+    <p>Collect the Dockers. Dodge the chaos. Keep Wendy running!</p>
+    <p id="hint">Keyboard: ← → to move • ↑ / SPACE to jump</p>
+    <button id="play">START PICKING 😂</button>
+  </div>
+</div>
+
+<div id="gameover" style="display:none">
+  <div class="card">
+    <h2>WENDY HAS BEEN CAUGHT! 😂</h2>
+    <p>Score: <b id="finalScore">0</b><br>Dockers collected: <b id="finalDockers">0</b></p>
+    <button id="again">RUN IT AGAIN</button>
+  </div>
+</div>
+</div>
+
+<script>
+const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+const WENDY=new Image(),BG=new Image();
+WENDY.src='wendy.png'; BG.src='kendal.png';
+
+let dpr=1,w=0,h=0;
+function resize(){
+ dpr=Math.min(devicePixelRatio||1,2); w=innerWidth; h=innerHeight;
+ canvas.width=w*dpr; canvas.height=h*dpr; canvas.style.width=w+'px'; canvas.style.height=h+'px';
+ ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+addEventListener('resize',resize); resize();
+
+let running=false, last=0, score=0, dockers=0, lives=3, speed=0.48;
+let lane=1,targetLane=1,jump=0,vy=0,objects=[],spawn=0,dist=0;
+let best=Number(localStorage.getItem('wendyBest')||0);
+document.getElementById('best').textContent=best;
+
+function roadY(){return h*.62}
+function laneX(l){
+ const center=w/2, spread=Math.min(w*.31,280);
+ return center+(l-1)*spread;
+}
+function playerY(){return h*.77-jump}
+function spawnObject(){
+ const lane=Math.floor(Math.random()*3);
+ const type=Math.random()<.57?'docker':'obstacle';
+ objects.push({lane,z:1.15,type,hit:false});
+}
+function reset(){
+ score=0;dockers=0;lives=3;speed=.48;lane=targetLane=1;jump=0;vy=0;objects=[];spawn=0;dist=0;
+ updateHud();
+}
+function updateHud(){
+ document.getElementById('score').textContent=Math.floor(score);
+ document.getElementById('dockers').textContent=dockers;
+ document.getElementById('lives').textContent=lives;
+}
+function toast(t){
+ const e=document.getElementById('toast');e.textContent=t;e.classList.add('show');
+ clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove('show'),650);
+}
+function hit(){
+ lives--; toast('OI! WENDY! 😭');
+ if(lives<=0){endGame();return}
+}
+function endGame(){
+ running=false;
+ best=Math.max(best,Math.floor(score));localStorage.setItem('wendyBest',best);
+ document.getElementById('best').textContent=best;
+ document.getElementById('finalScore').textContent=Math.floor(score);
+ document.getElementById('finalDockers').textContent=dockers;
+ document.getElementById('gameover').style.display='flex';
+}
+function move(dir){
+ targetLane=Math.max(0,Math.min(2,targetLane+dir));
+}
+function doJump(){if(jump===0){vy=1.55}}
+addEventListener('keydown',e=>{
+ if(!running)return;
+ if(e.key==='ArrowLeft'||e.key.toLowerCase()==='a')move(-1);
+ if(e.key==='ArrowRight'||e.key.toLowerCase()==='d')move(1);
+ if(e.key==='ArrowUp'||e.key===' ')doJump();
+});
+let sx=0,sy=0;
+canvas.addEventListener('touchstart',e=>{const t=e.changedTouches[0];sx=t.clientX;sy=t.clientY},{passive:true});
+canvas.addEventListener('touchend',e=>{
+ if(!running)return;
+ const t=e.changedTouches[0],dx=t.clientX-sx,dy=t.clientY-sy;
+ if(Math.max(Math.abs(dx),Math.abs(dy))<25)return;
+ if(Math.abs(dx)>Math.abs(dy))move(dx>0?1:-1); else if(dy<0)doJump();
+},{passive:true});
+
+function drawBackground(){
+ // Move the supplied Kendal artwork slowly to create a parallax/endless feel.
+ const scale=Math.max(w/1536,h/1152);
+ const iw=1536*scale, ih=1152*scale;
+ const scroll=(dist*.10)%(iw-w);
+ ctx.drawImage(BG,(w-iw)/2-scroll*.35,(h-ih)*.18,iw,ih);
+ // road overlay
+ const gy=roadY();
+ const grad=ctx.createLinearGradient(0,gy,0,h);grad.addColorStop(0,'rgba(30,30,35,.20)');grad.addColorStop(1,'rgba(5,5,10,.72)');
+ ctx.fillStyle=grad;ctx.fillRect(0,gy,w,h-gy);
+ // perspective lane lines
+ ctx.lineWidth=4;ctx.strokeStyle='rgba(255,255,255,.48)';
+ for(let i=0;i<2;i++){
+   const bx=w/2+(i?1:-1)*Math.min(w*.14,120), tx=w/2+(i?1:-1)*Math.min(w*.44,430);
+   ctx.beginPath();ctx.moveTo(bx,gy);ctx.lineTo(tx,h);ctx.stroke();
+ }
+}
+function project(o){
+ const p=Math.max(0,Math.min(1,1-o.z));
+ const y=roadY()+p*(h-roadY()+35);
+ const spread=Math.min(w*.31,280);
+ const x=w/2+(o.lane-1)*spread*(.25+.75*p);
+ return {x,y,s:.35+.95*p};
+}
+function drawObject(o){
+ const q=project(o);
+ ctx.save();ctx.translate(q.x,q.y);ctx.scale(q.s,q.s);
+ if(o.type==='docker'){
+   ctx.rotate(-.12);ctx.fillStyle='#f5f5f5';ctx.fillRect(-27,-12,42,16);
+   ctx.fillStyle='#e9a22b';ctx.fillRect(15,-12,12,16);ctx.strokeStyle='#222';ctx.lineWidth=3;ctx.strokeRect(-27,-12,54,16);
+   ctx.font='24px Arial';ctx.fillText('💨',-39,-18);
+ }else{
+   ctx.fillStyle='#ff4d4d';ctx.strokeStyle='#111';ctx.lineWidth=4;
+   ctx.fillRect(-38,-45,76,50);ctx.strokeRect(-38,-45,76,50);
+   ctx.fillStyle='#fff';ctx.font='bold 16px Arial';ctx.textAlign='center';ctx.fillText('DANGER',0,-15);
+   ctx.font='28px Arial';ctx.fillText('⚠️',0,8);
+ }
+ ctx.restore();
+}
+function drawPlayer(){
+ const x=laneX(lane), y=playerY();
+ // Wendy is kept as a character image, but the lane movement/jump is fully game-driven.
+ ctx.save();ctx.translate(x,y);
+ const s=Math.min(w/700,1)*.72;
+ ctx.scale(s,s);
+ ctx.shadowColor='rgba(0,0,0,.45)';ctx.shadowBlur=10;ctx.shadowOffsetY=8;
+ ctx.drawImage(WENDY,-200,-275,400,550);
+ ctx.restore();
+}
+function update(dt){
+ speed=Math.min(.95,speed+dt*.0035);
+ dist+=dt*speed*100;
+ score+=dt*speed*18;
+ lane+=(targetLane-lane)*Math.min(1,dt*12);
+ if(jump>0||vy>0){jump+=vy*dt*60;vy-=.075*dt*60;if(jump<0){jump=0;vy=0}}
+ spawn-=dt;
+ if(spawn<=0){spawn=Math.max(.38,1.0-speed)+Math.random()*.35;spawnObject()}
+ for(const o of objects)o.z-=dt*speed;
+ for(const o of objects){
+   if(o.hit||o.z<.18||o.z>1.0)continue;
+   const sameLane=Math.abs(lane-o.lane)<.28;
+   if(sameLane){
+     if(o.type==='docker'){
+       o.hit=true;dockers++;score+=100;toast('+100 DOCKER! 🚬');updateHud();
+     }else if(jump<70){
+       o.hit=true;hit();updateHud();
+     }else{o.hit=true}
+   }
+ }
+ objects=objects.filter(o=>o.z>-.05);
+ updateHud();
+}
+function draw(){
+ ctx.clearRect(0,0,w,h);drawBackground();
+ objects.slice().sort((a,b)=>b.z-a.z).forEach(drawObject);
+ drawPlayer();
+}
+function loop(t){
+ if(!last)last=t;const dt=Math.min(.035,(t-last)/1000);last=t;
+ if(running)update(dt);draw();requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+function startGame(){
+ reset();running=true;document.getElementById('menu').style.display='none';last=0;
+}
+document.getElementById('play').onclick=startGame;
+document.getElementById('again').onclick=()=>{document.getElementById('gameover').style.display='none';startGame()};
+</script>
+</body>
+</html>
